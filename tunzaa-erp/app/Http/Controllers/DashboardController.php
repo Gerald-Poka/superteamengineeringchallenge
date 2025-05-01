@@ -3,50 +3,48 @@
 namespace App\Http\Controllers;
 
 use App\Models\Sale;
-use Carbon\Carbon;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        // Get sales from the past 7 days
-        $startDate = Carbon::now()->subDays(6)->startOfDay();
-        $endDate = Carbon::now()->endOfDay();
-        
-        $dailySales = Sale::where('user_id', Auth::id())
-            ->whereBetween('created_at', [$startDate, $endDate])
-            ->select(
-                DB::raw('DATE(created_at) as date'),
-                DB::raw('SUM(total_amount) as total')
-            )
-            ->groupBy('date')
-            ->orderBy('date')
-            ->get();
-        
-        // Fill in missing days with zero sales
-        $salesByDay = [];
-        for ($i = 0; $i < 7; $i++) {
-            $date = Carbon::now()->subDays(6 - $i)->format('Y-m-d');
-            $salesByDay[$date] = 0;
-        }
-        
-        foreach ($dailySales as $sale) {
-            $salesByDay[$sale->date] = $sale->total;
-        }
-        
-        // Get recent sales
-        $recentSales = Sale::where('user_id', Auth::id())
-            ->with(['saleItems.product'])
-            ->orderBy('created_at', 'desc')
-            ->take(10)
-            ->get();
-        
+        $salesByDay = Sale::where('user_id', Auth::id())
+            ->whereBetween('created_at', [now()->subDays(6)->startOfDay(), now()->endOfDay()])
+            ->get()
+            ->groupBy(function ($sale) {
+                return $sale->created_at->format('l');
+            })
+            ->map(function ($sales) {
+                return [
+                    'day' => $sales->first()->created_at->format('l'),
+                    'amount' => $sales->sum('total_amount'),
+                    'products_count' => $sales->sum(function ($sale) {
+                        return $sale->saleItems->sum('quantity');
+                    })
+                ];
+            })
+            ->values();
+
+        // Fill in missing days
+        $daysOfWeek = collect(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']);
+        $filledSalesByDay = $daysOfWeek->map(function ($day) use ($salesByDay) {
+            return $salesByDay->firstWhere('day', $day) ?? [
+                'day' => $day,
+                'amount' => 0,
+                'products_count' => 0
+            ];
+        });
+
         return view('dashboard', [
-            'salesByDay' => $salesByDay,
-            'recentSales' => $recentSales,
+            'recentSales' => Sale::where('user_id', Auth::id())
+                ->with('saleItems')
+                ->latest()
+                ->take(5)
+                ->get(),
+            'salesByDay' => $filledSalesByDay
         ]);
     }
 }
